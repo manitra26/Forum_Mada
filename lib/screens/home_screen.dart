@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import 'profile_screen.dart';
 import 'settings_screen.dart';
 
@@ -16,7 +17,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final List<Widget> _pages = [
     const HomeContent(),
-    const Center(child: Text('Catégories - À venir')),
+    const CategoriesPage(),
     const Center(child: Text('Notifications - À venir')),
   ];
 
@@ -121,9 +122,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 title: const Text('Déconnexion',
                     style: TextStyle(color: Colors.red)),
                 onTap: () async {
+                  final localContext = context;
                   await authProvider.logout();
                   if (!mounted) return;
-                  Navigator.pushReplacementNamed(context, '/');
+                  Navigator.pushReplacementNamed(localContext, '/');
                 },
               ),
             ],
@@ -153,6 +155,25 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+  IconData _getIconData(String iconName) {
+    switch (iconName) {
+      case 'chat':
+        return Icons.chat;
+      case 'computer':
+        return Icons.computer;
+      case 'palette':
+        return Icons.palette;
+      case 'calendar':
+        return Icons.calendar_today;
+      case 'newspaper':
+        return Icons.newspaper;
+      case 'cart':
+        return Icons.shopping_cart;
+      default:
+        return Icons.forum;
+    }
+  }
 }
 
 class HomeContent extends StatelessWidget {
@@ -160,28 +181,124 @@ class HomeContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.forum, size: 80, color: Colors.blue),
+            SizedBox(height: 24),
+            Text(
+              'Bienvenue sur ForumMada',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Accédez aux catégories pour discuter avec la communauté malgache.',
+              style: TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class CategoriesPage extends StatefulWidget {
+  const CategoriesPage({super.key});
+
+  @override
+  State<CategoriesPage> createState() => _CategoriesPageState();
+}
+
+class _CategoriesPageState extends State<CategoriesPage> {
+  final ApiService _apiService = ApiService();
+  bool _isLoading = true;
+  String? _error;
+  List<dynamic> _categories = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCategories();
+  }
+
+  Future<void> _loadCategories() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final categories = await _apiService.getCategories();
+      setState(() {
+        _categories = categories;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error, size: 64, color: Colors.red),
+            const SizedBox(height: 16),
+            Text(_error!),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loadCategories,
+              child: const Text('Réessayer'),
+            ),
+          ],
+        ),
+      );
+    }
+
     return RefreshIndicator(
-      onRefresh: () async {
-        // Rafraîchir les données
-        await Future.delayed(const Duration(seconds: 1));
-      },
+      onRefresh: _loadCategories,
       child: ListView.builder(
         padding: const EdgeInsets.all(16),
-        itemCount: 5,
+        itemCount: _categories.length,
         itemBuilder: (context, index) {
+          final category = _categories[index];
           return Card(
-            margin: const EdgeInsets.only(bottom: 16),
+            margin: const EdgeInsets.only(bottom: 12),
             child: ListTile(
               leading: CircleAvatar(
-                backgroundColor: Colors.blue.withOpacity(0.1),
-                child: const Icon(Icons.forum, color: Colors.blue),
+                backgroundColor: Color(
+                  int.parse(category['color'].substring(1, 7), radix: 16),
+                ).withAlpha((0.2 * 255).round()),
+                child: Icon(
+                  _getIconData(category['icon'] as String),
+                  color: Color(
+                    int.parse(category['color'].substring(1, 7), radix: 16),
+                  ),
+                ),
               ),
-              title: Text('Sujet de discussion ${index + 1}'),
-              subtitle: Text('Dernière activité: Il y a ${index + 1} heure'),
+              title: Text(category['name'] as String),
+              subtitle: Text(category['description'] as String),
               trailing: const Icon(Icons.chevron_right),
               onTap: () {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Sujet ${index + 1} sélectionné')),
+                  SnackBar(
+                      content:
+                          Text('Catégorie ${category['name']} sélectionnée')),
                 );
               },
             ),
@@ -189,5 +306,24 @@ class HomeContent extends StatelessWidget {
         },
       ),
     );
+  }
+
+  IconData _getIconData(String iconName) {
+    switch (iconName) {
+      case 'chat':
+        return Icons.chat;
+      case 'computer':
+        return Icons.computer;
+      case 'palette':
+        return Icons.palette;
+      case 'calendar':
+        return Icons.calendar_today;
+      case 'newspaper':
+        return Icons.newspaper;
+      case 'cart':
+        return Icons.shopping_cart;
+      default:
+        return Icons.forum;
+    }
   }
 }

@@ -1,0 +1,14 @@
+name: forum_mada_backend
+description: Backend Dart local pour ForumMada utilisant PostgreSQL
+version: 1.0.0+1
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  shelf_cors_headers: ^0.1.5
+  postgres: ^3.5.12
+  dotenv: ^4.2.0
+
+executables:
+  server: bin/server.dart
