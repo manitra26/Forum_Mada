@@ -101,7 +101,9 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 24),
                         Text(
                           'Bienvenue sur ForumMada',
-                          style: Theme.of(context).textTheme.headlineSmall
+                          style: Theme.of(context)
+                              .textTheme
+                              .headlineSmall
                               ?.copyWith(fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 8),
@@ -110,7 +112,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
                         const SizedBox(height: 32),
-
                         TextFormField(
                           controller: _emailController,
                           decoration: const InputDecoration(
@@ -130,7 +131,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           },
                         ),
                         const SizedBox(height: 16),
-
                         TextFormField(
                           controller: _passwordController,
                           decoration: InputDecoration(
@@ -167,7 +167,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
                         const SizedBox(height: 24),
-
                         SizedBox(
                           width: double.infinity,
                           height: 50,
@@ -187,7 +186,6 @@ class _LoginScreenState extends State<LoginScreen> {
                                 ),
                         ),
                         const SizedBox(height: 16),
-
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -205,7 +203,6 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ],
                         ),
-
                         const SizedBox(height: 16),
                         const Text(
                           'Test: test@test.com / password',

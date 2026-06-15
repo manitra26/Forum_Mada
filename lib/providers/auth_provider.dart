@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import '../models/user.dart';
-import '../services/auth_service.dart';
+import '../services/api_service.dart';
 
 class AuthProvider extends ChangeNotifier {
-  final AuthService _authService = AuthService();
+  final ApiService _apiService = ApiService();
 
   User? _user;
   bool _isLoading = false;
@@ -20,19 +20,19 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final user = await _authService.login(email, password);
-      if (user == null) {
-        _error = 'Email ou mot de passe incorrect';
-        _isLoading = false;
-        notifyListeners();
-        return false;
-      }
-      _user = user;
+      final response = await _apiService.login(email, password);
+      _user = User(
+        id: response['user_id'] as int,
+        username: response['username'] as String,
+        email: email,
+        role: response['role'] as String? ?? 'user',
+        createdAt: DateTime.now(),
+      );
       _isLoading = false;
       notifyListeners();
       return true;
     } catch (e) {
-      _error = 'Impossible de se connecter à la base de données';
+      _error = e.toString();
       _isLoading = false;
       notifyListeners();
       return false;
@@ -44,18 +44,24 @@ class AuthProvider extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
-    await Future.delayed(const Duration(seconds: 1));
-
-    _user = User(
-      id: 1,
-      username: username,
-      email: email,
-      role: 'user',
-      createdAt: DateTime.now(),
-    );
-    _isLoading = false;
-    notifyListeners();
-    return true;
+    try {
+      final response = await _apiService.register(username, email, password);
+      _user = User(
+        id: response['user_id'] as int,
+        username: response['username'] as String,
+        email: response['email'] as String,
+        role: response['role'] as String? ?? 'user',
+        createdAt: DateTime.now(),
+      );
+      _isLoading = false;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
   }
 
   Future<void> logout() async {
