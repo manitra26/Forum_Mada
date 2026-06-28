@@ -1,20 +1,39 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../models/topic.dart';
+import '../providers/auth_provider.dart';
+import '../screens/topic_detail_screen.dart';
 
 class TopicCard extends StatelessWidget {
   final Topic topic;
+  final VoidCallback? onChanged;
 
-  const TopicCard({super.key, required this.topic});
+  const TopicCard({
+    super.key,
+    required this.topic,
+    this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final currentUser = context.watch<AuthProvider>().user;
+    final avatarUrl = topic.userId == currentUser?.id
+        ? currentUser?.avatarUrl
+        : topic.avatarUrl;
+    final trimmedAvatarUrl = avatarUrl?.trim();
+
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
       child: ListTile(
         title: Text(topic.title),
         subtitle: Text(topic.content),
         leading: CircleAvatar(
-          child: Text(topic.username.substring(0, 1).toUpperCase()),
+          backgroundImage: trimmedAvatarUrl == null || trimmedAvatarUrl.isEmpty
+              ? null
+              : NetworkImage(trimmedAvatarUrl),
+          child: trimmedAvatarUrl == null || trimmedAvatarUrl.isEmpty
+              ? Text(topic.username.substring(0, 1).toUpperCase())
+              : null,
         ),
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -24,8 +43,16 @@ class TopicCard extends StatelessWidget {
             Icon(topic.isPinned ? Icons.push_pin : Icons.forum),
           ],
         ),
-        onTap: () {
-          Navigator.pushNamed(context, '/topic-detail', arguments: topic);
+        onTap: () async {
+          final changed = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (_) => TopicDetailScreen(topic: topic),
+            ),
+          );
+          if (changed == true) {
+            onChanged?.call();
+          }
         },
       ),
     );

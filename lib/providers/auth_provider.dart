@@ -21,13 +21,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final response = await _apiService.login(email, password);
-      _user = User(
-        id: response['user_id'] as int,
-        username: response['username'] as String,
-        email: email,
-        role: response['role'] as String? ?? 'user',
-        createdAt: DateTime.now(),
-      );
+      _user = User.fromJson(response);
       _isLoading = false;
       notifyListeners();
       return true;
@@ -46,13 +40,7 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final response = await _apiService.register(username, email, password);
-      _user = User(
-        id: response['user_id'] as int,
-        username: response['username'] as String,
-        email: response['email'] as String,
-        role: response['role'] as String? ?? 'user',
-        createdAt: DateTime.now(),
-      );
+      _user = User.fromJson(response);
       _isLoading = false;
       notifyListeners();
       return true;

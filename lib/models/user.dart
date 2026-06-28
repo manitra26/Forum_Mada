@@ -5,6 +5,7 @@ class User {
   final String? avatarUrl;
   final String? bio;
   final String role;
+  final bool isActive;
   final DateTime createdAt;
   final int topicsCount;
   final int postsCount;
@@ -16,6 +17,7 @@ class User {
     this.avatarUrl,
     this.bio,
     required this.role,
+    this.isActive = true,
     required this.createdAt,
     this.topicsCount = 0,
     this.postsCount = 0,
@@ -23,13 +25,16 @@ class User {
 
   factory User.fromJson(Map<String, dynamic> json) {
     return User(
-      id: json['id'],
+      id: json['id'] ?? json['user_id'],
       username: json['username'],
       email: json['email'],
       avatarUrl: json['avatar_url'],
       bio: json['bio'],
       role: json['role'] ?? 'user',
-      createdAt: DateTime.parse(json['created_at']),
+      isActive: json['is_active'] ?? true,
+      createdAt: json['created_at'] == null
+          ? DateTime.now()
+          : DateTime.parse(json['created_at']),
       topicsCount: json['topics_count'] ?? 0,
       postsCount: json['posts_count'] ?? 0,
     );
@@ -43,6 +48,7 @@ class User {
       'avatar_url': avatarUrl,
       'bio': bio,
       'role': role,
+      'is_active': isActive,
       'created_at': createdAt.toIso8601String(),
     };
   }

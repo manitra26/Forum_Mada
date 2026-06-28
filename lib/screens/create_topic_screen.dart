@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 
 class CreateTopicScreen extends StatefulWidget {
-  const CreateTopicScreen({super.key});
+  final int? categoryId;
+
+  const CreateTopicScreen({super.key, this.categoryId});
 
   @override
   State<CreateTopicScreen> createState() => _CreateTopicScreenState();
 }
 
 class _CreateTopicScreenState extends State<CreateTopicScreen> {
+  final ApiService _apiService = ApiService();
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
   final _contentController = TextEditingController();
@@ -23,19 +29,30 @@ class _CreateTopicScreenState extends State<CreateTopicScreen> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
-    await Future.delayed(const Duration(seconds: 1));
-    if (!mounted) return;
-    setState(() => _isSaving = false);
-    Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Sujet créé avec succès')),
-    );
+
+    try {
+      final user = context.read<AuthProvider>().user;
+      await _apiService.createTopic(
+        title: _titleController.text.trim(),
+        content: _contentController.text.trim(),
+        userId: user?.id ?? 1,
+        categoryId: widget.categoryId ?? 1,
+      );
+      if (!mounted) return;
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString())),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Créer un sujet')),
+      appBar: AppBar(title: const Text('Creer un sujet')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Form(

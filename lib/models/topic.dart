@@ -37,11 +37,11 @@ class Topic {
     return Topic(
       id: json['id'],
       title: json['title'],
-      content: json['content'],
+      content: json['content'] ?? '',
       userId: json['user_id'],
       username: json['username'],
       avatarUrl: json['avatar_url'],
-      categoryId: json['category_id'],
+      categoryId: json['category_id'] ?? 0,
       categoryName: json['category_name'] ?? '',
       views: json['views'] ?? 0,
       isPinned: json['is_pinned'] ?? false,
@@ -52,6 +52,29 @@ class Topic {
       lastPostAt: json['last_post_at'] != null 
           ? DateTime.parse(json['last_post_at']) 
           : null,
+    );
+  }
+
+  Topic copyWith({
+    bool? isPinned,
+    bool? isLocked,
+  }) {
+    return Topic(
+      id: id,
+      title: title,
+      content: content,
+      userId: userId,
+      username: username,
+      avatarUrl: avatarUrl,
+      categoryId: categoryId,
+      categoryName: categoryName,
+      views: views,
+      isPinned: isPinned ?? this.isPinned,
+      isLocked: isLocked ?? this.isLocked,
+      postsCount: postsCount,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      lastPostAt: lastPostAt,
     );
   }
 }

@@ -37,4 +37,22 @@ class Post {
       updatedAt: DateTime.parse(json['updated_at']),
     );
   }
+
+  Post copyWith({
+    int? likesCount,
+    bool? userLiked,
+  }) {
+    return Post(
+      id: id,
+      content: content,
+      userId: userId,
+      username: username,
+      avatarUrl: avatarUrl,
+      topicId: topicId,
+      likesCount: likesCount ?? this.likesCount,
+      userLiked: userLiked ?? this.userLiked,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+    );
+  }
 }
