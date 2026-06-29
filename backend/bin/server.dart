@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dotenv/dotenv.dart';
@@ -6,6 +7,8 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_cors_headers/shelf_cors_headers.dart';
 import 'package:shelf_router/shelf_router.dart';
+import 'package:shelf_web_socket/shelf_web_socket.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 const _jsonHeaders = {
   'Content-Type': 'application/json',
@@ -13,6 +16,7 @@ const _jsonHeaders = {
 
 // Connexion PostgreSQL
 late Connection connection;
+final Map<int, Set<WebSocketChannel>> _notificationSockets = {};
 
 Future<void> main(List<String> args) async {
   final env = DotEnv(includePlatformEnvironment: true)..load();
@@ -65,6 +69,7 @@ Future<void> main(List<String> args) async {
     ..get('/api/categories', _getCategories)
     ..post('/api/categories', _createCategory)
     ..patch('/api/categories/<id>', _updateCategory)
+    ..post('/api/categories/<id>/follow', _toggleCategoryFollow)
     ..delete('/api/categories/<id>', _deleteCategory)
     ..get('/api/topics', _getTopics)
     ..post('/api/topics', _createTopic)
@@ -78,9 +83,14 @@ Future<void> main(List<String> args) async {
     ..get('/api/users/<id>', _getUserProfile)
     ..get('/api/users/<id>/topics', _getUserTopics)
     ..get('/api/users/<id>/posts', _getUserPosts)
+    ..get('/api/users/<id>/notifications', _getUserNotifications)
+    ..patch('/api/users/<id>/notifications/read-all',
+        _markAllNotificationsRead)
+    ..patch('/api/notifications/<id>/read', _markNotificationRead)
     ..patch('/api/users/<id>/profile', _updateUserProfile)
     ..post('/api/users/<id>/avatar', _uploadUserAvatar)
     ..get('/uploads/<path|.*>', _serveUpload)
+    ..get('/ws/notifications', _notificationsSocket)
     ..post('/api/register', _registerUser)
     ..post('/api/login', _loginUser);
 
@@ -436,8 +446,21 @@ Map<String, dynamic> _adminUserToJson(ResultRow row) {
 
 Future<Response> _getCategories(Request request) async {
   try {
+    final userId = int.tryParse(request.url.queryParameters['user_id'] ?? '');
     final results = await connection.execute(
-      'SELECT * FROM categories ORDER BY id',
+      Sql.named('''
+        SELECT
+          c.*,
+          EXISTS(
+            SELECT 1
+            FROM category_follows f
+            WHERE f.category_id = c.id
+              AND f.user_id = @userId
+          ) as is_following
+        FROM categories c
+        ORDER BY c.id
+      '''),
+      parameters: {'userId': userId ?? 0},
     );
 
     final categories = results.map((row) {
@@ -449,6 +472,7 @@ Future<Response> _getCategories(Request request) async {
         'color': row[4],
         'slug': row[5],
         'created_at': (row[6] as DateTime?)?.toIso8601String(),
+        'is_following': row[7] ?? false,
       };
     }).toList();
 
@@ -620,6 +644,74 @@ Future<Response> _deleteCategory(Request request, String id) async {
   }
 }
 
+Future<Response> _toggleCategoryFollow(Request request, String id) async {
+  try {
+    final body = await request.readAsString();
+    final data = jsonDecode(body) as Map<String, dynamic>;
+    final userId = data['user_id'] as int?;
+    final categoryId = int.tryParse(id);
+
+    if (userId == null || categoryId == null) {
+      return Response(400,
+          body: jsonEncode({'error': 'Utilisateur et categorie requis'}),
+          headers: _jsonHeaders);
+    }
+
+    final category = await connection.execute(
+      Sql.named('SELECT id FROM categories WHERE id = @categoryId'),
+      parameters: {'categoryId': categoryId},
+    );
+    if (category.isEmpty) {
+      return Response(404,
+          body: jsonEncode({'error': 'Categorie non trouvee'}),
+          headers: _jsonHeaders);
+    }
+
+    final existing = await connection.execute(
+      Sql.named('''
+        SELECT id
+        FROM category_follows
+        WHERE user_id = @userId AND category_id = @categoryId
+      '''),
+      parameters: {'userId': userId, 'categoryId': categoryId},
+    );
+
+    final isFollowing = existing.isEmpty;
+    if (isFollowing) {
+      await connection.execute(
+        Sql.named('''
+          INSERT INTO category_follows (user_id, category_id)
+          VALUES (@userId, @categoryId)
+          ON CONFLICT (user_id, category_id) DO NOTHING
+        '''),
+        parameters: {'userId': userId, 'categoryId': categoryId},
+      );
+    } else {
+      await connection.execute(
+        Sql.named('''
+          DELETE FROM category_follows
+          WHERE user_id = @userId AND category_id = @categoryId
+        '''),
+        parameters: {'userId': userId, 'categoryId': categoryId},
+      );
+    }
+
+    return Response.ok(
+      jsonEncode({
+        'user_id': userId,
+        'category_id': categoryId,
+        'is_following': isFollowing,
+      }),
+      headers: _jsonHeaders,
+    );
+  } catch (e) {
+    return Response.internalServerError(
+      body: jsonEncode({'error': e.toString()}),
+      headers: _jsonHeaders,
+    );
+  }
+}
+
 Map<String, dynamic> _categoryToJson(ResultRow row) {
   return {
     'id': row[0],
@@ -629,7 +721,143 @@ Map<String, dynamic> _categoryToJson(ResultRow row) {
     'color': row[4],
     'slug': row[5],
     'created_at': (row[6] as DateTime?)?.toIso8601String(),
+    'is_following': row.length > 7 ? row[7] ?? false : false,
   };
+}
+
+FutureOr<Response> _notificationsSocket(Request request) {
+  final userId = int.tryParse(request.url.queryParameters['user_id'] ?? '');
+  if (userId == null) {
+    return Response.badRequest(body: 'user_id requis');
+  }
+
+  return webSocketHandler((webSocket, _) {
+    final sockets = _notificationSockets.putIfAbsent(userId, () => {});
+    sockets.add(webSocket);
+    webSocket.sink.add(jsonEncode({
+      'type': 'connected',
+      'user_id': userId,
+    }));
+
+    webSocket.stream.listen(
+      (_) {},
+      onDone: () => _removeNotificationSocket(userId, webSocket),
+      onError: (_) => _removeNotificationSocket(userId, webSocket),
+      cancelOnError: true,
+    );
+  })(request);
+}
+
+void _removeNotificationSocket(int userId, WebSocketChannel webSocket) {
+  final sockets = _notificationSockets[userId];
+  if (sockets == null) return;
+  sockets.remove(webSocket);
+  if (sockets.isEmpty) {
+    _notificationSockets.remove(userId);
+  }
+}
+
+Future<Map<String, dynamic>?> _createNotification({
+  required int userId,
+  required String type,
+  required String content,
+}) async {
+  final result = await connection.execute(
+    Sql.named('''
+      INSERT INTO notifications (user_id, type, content)
+      VALUES (@userId, @type, @content)
+      RETURNING id, user_id, type, content, is_read, created_at
+    '''),
+    parameters: {
+      'userId': userId,
+      'type': type,
+      'content': content,
+    },
+  );
+
+  if (result.isEmpty) return null;
+  final notification = _notificationToJson(result.first);
+  _pushNotification(userId, notification);
+  return notification;
+}
+
+void _pushNotification(int userId, Map<String, dynamic> notification) {
+  final sockets = _notificationSockets[userId];
+  if (sockets == null || sockets.isEmpty) return;
+  final payload = jsonEncode({
+    'type': 'notification',
+    'notification': notification,
+  });
+
+  for (final socket in sockets.toList()) {
+    try {
+      socket.sink.add(payload);
+    } catch (_) {
+      _removeNotificationSocket(userId, socket);
+    }
+  }
+}
+
+Map<String, dynamic> _notificationToJson(ResultRow row) {
+  return {
+    'id': row[0],
+    'user_id': row[1],
+    'type': row[2],
+    'content': row[3],
+    'is_read': row[4] ?? false,
+    'created_at': _dateToIso(row[5]),
+  };
+}
+
+Future<String> _usernameForUser(int userId) async {
+  final result = await connection.execute(
+    Sql.named('SELECT username FROM users WHERE id = @userId'),
+    parameters: {'userId': userId},
+  );
+  if (result.isEmpty) return 'Quelqu un';
+  return result.first[0]?.toString() ?? 'Quelqu un';
+}
+
+Future<void> _notifyCategoryFollowers({
+  required int categoryId,
+  required int actorUserId,
+  required String actorUsername,
+  required String topicTitle,
+}) async {
+  final schemaResult = await connection.execute(
+    Sql.named('''
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'category_follows'
+        AND column_name IN ('user_id', 'category_id')
+    '''),
+  );
+  final columns = schemaResult.map((row) => row[0]?.toString()).toSet();
+  if (!columns.contains('user_id') || !columns.contains('category_id')) {
+    return;
+  }
+
+  final followers = await connection.execute(
+    Sql.named('''
+      SELECT DISTINCT user_id
+      FROM category_follows
+      WHERE category_id = @categoryId
+        AND user_id <> @actorUserId
+    '''),
+    parameters: {
+      'categoryId': categoryId,
+      'actorUserId': actorUserId,
+    },
+  );
+
+  for (final row in followers) {
+    await _createNotification(
+      userId: _toInt(row[0]),
+      type: 'category_topic',
+      content: '$actorUsername a cree un nouveau sujet: "$topicTitle"',
+    );
+  }
 }
 
 Future<Response> _getTopics(Request request) async {
@@ -637,7 +865,7 @@ Future<Response> _getTopics(Request request) async {
     final categoryId = request.url.queryParameters['category_id'];
 
     String sql = '''
-      SELECT t.*, u.username, COUNT(p.id) as posts_count, COALESCE(c.name, 'Sans categorie') as category_name
+      SELECT t.*, u.username, u.avatar_url, COUNT(p.id) as posts_count, COALESCE(c.name, 'Sans categorie') as category_name
       FROM topics t
       JOIN users u ON t.user_id = u.id
       LEFT JOIN categories c ON t.category_id = c.id
@@ -648,7 +876,7 @@ Future<Response> _getTopics(Request request) async {
       sql += ' WHERE t.category_id = @categoryId';
     }
 
-    sql += ' GROUP BY t.id, u.username, c.name ORDER BY t.is_pinned DESC, t.created_at DESC';
+    sql += ' GROUP BY t.id, u.username, u.avatar_url, c.name ORDER BY t.is_pinned DESC, t.created_at DESC';
 
     final results = categoryId != null
         ? await connection.execute(
@@ -670,8 +898,9 @@ Future<Response> _getTopics(Request request) async {
         'created_at': (row[8] as DateTime?)?.toIso8601String(),
         'updated_at': (row[9] as DateTime?)?.toIso8601String(),
         'username': row[10],
-        'posts_count': row[11],
-        'category_name': row[12],
+        'avatar_url': row[11],
+        'posts_count': row[12],
+        'category_name': row[13],
       };
     }).toList();
 
@@ -714,6 +943,8 @@ Future<Response> _createTopic(Request request) async {
     );
 
     final row = result.first;
+    final resolvedUserId = _toInt(row[3]);
+    final resolvedCategoryId = _toInt(row[4]);
     final topic = {
       'id': row[0],
       'title': row[1],
@@ -725,6 +956,14 @@ Future<Response> _createTopic(Request request) async {
       'is_locked': row[7],
       'created_at': (row[8] as DateTime?)?.toIso8601String(),
     };
+
+    final username = await _usernameForUser(resolvedUserId);
+    await _notifyCategoryFollowers(
+      categoryId: resolvedCategoryId,
+      actorUserId: resolvedUserId,
+      actorUsername: username,
+      topicTitle: title,
+    );
 
     return Response.ok(jsonEncode(topic), headers: _jsonHeaders);
   } catch (e) {
@@ -918,7 +1157,11 @@ Future<Response> _createPost(Request request) async {
     }
 
     final topicResult = await connection.execute(
-      Sql.named('SELECT is_locked FROM topics WHERE id = @topicId'),
+      Sql.named('''
+        SELECT is_locked, user_id, title
+        FROM topics
+        WHERE id = @topicId
+      '''),
       parameters: {'topicId': topicId},
     );
 
@@ -946,6 +1189,7 @@ Future<Response> _createPost(Request request) async {
     );
 
     final row = result.first;
+    final resolvedUserId = _toInt(row[2]);
     final post = {
       'id': row[0],
       'content': row[1],
@@ -955,6 +1199,17 @@ Future<Response> _createPost(Request request) async {
       'created_at': (row[5] as DateTime?)?.toIso8601String(),
       'updated_at': (row[6] as DateTime?)?.toIso8601String(),
     };
+
+    final topicOwnerId = _toInt(topicResult.first[1]);
+    if (topicOwnerId != 0 && topicOwnerId != resolvedUserId) {
+      final username = await _usernameForUser(resolvedUserId);
+      final topicTitle = topicResult.first[2]?.toString() ?? 'votre sujet';
+      await _createNotification(
+        userId: topicOwnerId,
+        type: 'reply',
+        content: '$username a repondu a votre sujet: "$topicTitle"',
+      );
+    }
 
     return Response.ok(jsonEncode(post), headers: _jsonHeaders);
   } catch (e) {
@@ -1037,6 +1292,28 @@ Future<Response> _togglePostLike(Request request, String id) async {
         Sql.named('UPDATE posts SET likes_count = likes_count + 1 WHERE id = @postId'),
         parameters: {'postId': postId},
       );
+
+      final postOwnerResult = await connection.execute(
+        Sql.named('''
+          SELECT p.user_id, t.title
+          FROM posts p
+          JOIN topics t ON t.id = p.topic_id
+          WHERE p.id = @postId
+        '''),
+        parameters: {'postId': postId},
+      );
+      if (postOwnerResult.isNotEmpty) {
+        final postOwnerId = _toInt(postOwnerResult.first[0]);
+        if (postOwnerId != 0 && postOwnerId != userId) {
+          final username = await _usernameForUser(userId);
+          final topicTitle = postOwnerResult.first[1]?.toString() ?? 'un sujet';
+          await _createNotification(
+            userId: postOwnerId,
+            type: 'like',
+            content: '$username a aime votre message dans "$topicTitle"',
+          );
+        }
+      }
     } else {
       await connection.execute(
         Sql.named(
@@ -1204,6 +1481,84 @@ Future<Response> _getUserPosts(Request request, String id) async {
     }).toList();
 
     return Response.ok(jsonEncode(posts), headers: _jsonHeaders);
+  } catch (e) {
+    return Response.internalServerError(
+      body: jsonEncode({'error': e.toString()}),
+      headers: _jsonHeaders,
+    );
+  }
+}
+
+Future<Response> _getUserNotifications(Request request, String id) async {
+  try {
+    final result = await connection.execute(
+      Sql.named('''
+        SELECT id, user_id, type, content, is_read, created_at
+        FROM notifications
+        WHERE user_id = @userId
+        ORDER BY created_at DESC
+        LIMIT 100
+      '''),
+      parameters: {'userId': int.parse(id)},
+    );
+
+    return Response.ok(
+      jsonEncode(result.map(_notificationToJson).toList()),
+      headers: _jsonHeaders,
+    );
+  } catch (e) {
+    return Response.internalServerError(
+      body: jsonEncode({'error': e.toString()}),
+      headers: _jsonHeaders,
+    );
+  }
+}
+
+Future<Response> _markNotificationRead(Request request, String id) async {
+  try {
+    final result = await connection.execute(
+      Sql.named('''
+        UPDATE notifications
+        SET is_read = true
+        WHERE id = @id
+        RETURNING id, user_id, type, content, is_read, created_at
+      '''),
+      parameters: {'id': int.parse(id)},
+    );
+
+    if (result.isEmpty) {
+      return Response(404,
+          body: jsonEncode({'error': 'Notification non trouvee'}),
+          headers: _jsonHeaders);
+    }
+
+    return Response.ok(
+      jsonEncode(_notificationToJson(result.first)),
+      headers: _jsonHeaders,
+    );
+  } catch (e) {
+    return Response.internalServerError(
+      body: jsonEncode({'error': e.toString()}),
+      headers: _jsonHeaders,
+    );
+  }
+}
+
+Future<Response> _markAllNotificationsRead(Request request, String id) async {
+  try {
+    await connection.execute(
+      Sql.named('''
+        UPDATE notifications
+        SET is_read = true
+        WHERE user_id = @userId
+      '''),
+      parameters: {'userId': int.parse(id)},
+    );
+
+    return Response.ok(
+      jsonEncode({'message': 'Notifications marquees comme lues'}),
+      headers: _jsonHeaders,
+    );
   } catch (e) {
     return Response.internalServerError(
       body: jsonEncode({'error': e.toString()}),
@@ -1641,6 +1996,56 @@ Future<void> _initDatabase(Connection connection) async {
       UNIQUE(user_id, post_id)
     )
   ''');
+
+  // Table category_follows: categories suivies par les utilisateurs
+  await connection.execute('''
+    CREATE TABLE IF NOT EXISTS category_follows (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, category_id)
+    )
+  ''');
+
+  await connection.execute(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_category_follows_user_category ON category_follows(user_id, category_id)',
+  );
+
+  // Table notifications
+  await connection.execute('''
+    CREATE TABLE IF NOT EXISTS notifications (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      type VARCHAR(50) NOT NULL,
+      content TEXT NOT NULL,
+      is_read BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  ''');
+
+  await connection.execute(
+    'ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE',
+  );
+  await connection.execute(
+    'ALTER TABLE notifications ADD COLUMN IF NOT EXISTS type VARCHAR(50) NOT NULL DEFAULT \'notification\'',
+  );
+  await connection.execute(
+    'ALTER TABLE notifications ADD COLUMN IF NOT EXISTS content TEXT NOT NULL DEFAULT \'\'',
+  );
+  await connection.execute(
+    'ALTER TABLE notifications ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT false',
+  );
+  await connection.execute(
+    'ALTER TABLE notifications ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+  );
+
+  await connection.execute(
+    'CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC)',
+  );
+  await connection.execute(
+    'CREATE INDEX IF NOT EXISTS idx_category_follows_category ON category_follows(category_id)',
+  );
 
   print('✅ Toutes les tables sont prêtes');
 }

@@ -9,6 +9,7 @@ dependencies:
   shelf_cors_headers: ^0.1.5
   postgres: ^3.5.12
   dotenv: ^4.2.0
+  shelf_web_socket: ^3.0.0
 
 executables:
   server: bin/server.dart

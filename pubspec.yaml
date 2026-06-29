@@ -53,6 +53,7 @@ dependencies:
   
   # WebSocket pour temps réel
   socket_io_client: ^2.0.3
+  web_socket_channel: ^3.0.3
 
   # Pull to refresh
   pull_to_refresh: ^2.0.0

@@ -103,10 +103,15 @@ class ApiService {
     }
   }
 
-  Future<List<dynamic>> getCategories() async {
+  Future<List<dynamic>> getCategories({int? userId}) async {
     try {
+      final uri = Uri.parse('$baseUrl/categories').replace(
+        queryParameters: {
+          if (userId != null) 'user_id': '$userId',
+        },
+      );
       final response = await http.get(
-        Uri.parse('$baseUrl/categories'),
+        uri,
         headers: {'Content-Type': 'application/json'},
       );
 
@@ -118,6 +123,22 @@ class ApiService {
       print('Erreur getCategories: $e');
       throw Exception('Erreur de connexion au serveur');
     }
+  }
+
+  Future<Map<String, dynamic>> toggleCategoryFollow({
+    required int categoryId,
+    required int userId,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/categories/$categoryId/follow'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'user_id': userId}),
+    );
+
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Erreur suivi categorie'));
   }
 
   Future<Map<String, dynamic>> createCategory({
@@ -346,6 +367,41 @@ class ApiService {
       return json.decode(response.body) as List<dynamic>;
     }
     throw Exception(_errorMessage(response, 'Erreur chargement messages'));
+  }
+
+  Future<List<dynamic>> getUserNotifications(int userId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/users/$userId/notifications'),
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as List<dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Erreur chargement notifications'));
+  }
+
+  Future<Map<String, dynamic>> markNotificationRead(int notificationId) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/notifications/$notificationId/read'),
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Erreur lecture notification'));
+  }
+
+  Future<void> markAllNotificationsRead(int userId) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/users/$userId/notifications/read-all'),
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception(_errorMessage(response, 'Erreur lecture notifications'));
+    }
   }
 
   Future<Map<String, dynamic>> updateUserProfile({

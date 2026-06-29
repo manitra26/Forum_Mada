@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
+import '../services/socket_service.dart';
+import '../utils/formatters.dart';
 import 'admin_dashboard_screen.dart';
 import 'admin_users_screen.dart';
 import 'profile_screen.dart';
@@ -17,12 +21,147 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  final ApiService _apiService = ApiService();
+  final SocketService _socketService = SocketService();
+  StreamSubscription<Map<String, dynamic>>? _notificationSubscription;
+  List<Map<String, dynamic>> _notifications = [];
+  bool _notificationsLoading = false;
+  String? _notificationsError;
+  int? _connectedUserId;
 
-  final List<Widget> _pages = [
-    const HomeContent(),
-    const CategoriesPage(),
-    const Center(child: Text('Notifications - a venir')),
-  ];
+  int get _unreadNotifications =>
+      _notifications.where((item) => item['is_read'] != true).length;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final userId = context.read<AuthProvider>().user?.id;
+    if (userId != null && userId != _connectedUserId) {
+      _connectedUserId = userId;
+      _loadNotifications(userId);
+      _notificationSubscription?.cancel();
+      _notificationSubscription = _socketService.notifications.listen(
+        _handleRealtimeNotification,
+      );
+      _socketService.connect(userId: userId);
+    }
+  }
+
+  @override
+  void dispose() {
+    _notificationSubscription?.cancel();
+    _socketService.close();
+    super.dispose();
+  }
+
+  Future<void> _loadNotifications(int userId) async {
+    setState(() {
+      _notificationsLoading = true;
+      _notificationsError = null;
+    });
+
+    try {
+      final result = await _apiService.getUserNotifications(userId);
+      if (!mounted) return;
+      setState(() {
+        _notifications = result
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+        _notificationsLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _notificationsError = e.toString();
+        _notificationsLoading = false;
+      });
+    }
+  }
+
+  void _handleRealtimeNotification(Map<String, dynamic> notification) {
+    if (!mounted) return;
+    setState(() {
+      _notifications.removeWhere((item) => item['id'] == notification['id']);
+      _notifications.insert(0, notification);
+    });
+  }
+
+  Future<void> _markNotificationRead(Map<String, dynamic> notification) async {
+    final id = notification['id'] as int?;
+    if (id == null || notification['is_read'] == true) return;
+
+    setState(() {
+      notification['is_read'] = true;
+    });
+
+    try {
+      final updated = await _apiService.markNotificationRead(id);
+      if (!mounted) return;
+      setState(() {
+        final index = _notifications.indexWhere((item) => item['id'] == id);
+        if (index != -1) {
+          _notifications[index] = updated;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        notification['is_read'] = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString())),
+      );
+    }
+  }
+
+  Future<void> _markAllNotificationsRead() async {
+    final userId = _connectedUserId;
+    if (userId == null) return;
+    final previous = _notifications
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+
+    setState(() {
+      _notifications = _notifications.map((item) {
+        return {...item, 'is_read': true};
+      }).toList();
+    });
+
+    try {
+      await _apiService.markAllNotificationsRead(userId);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _notifications = previous;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString())),
+      );
+    }
+  }
+
+  Widget _buildCurrentPage() {
+    switch (_selectedIndex) {
+      case 1:
+        return const CategoriesPage();
+      case 2:
+        return NotificationsPage(
+          notifications: _notifications,
+          isLoading: _notificationsLoading,
+          error: _notificationsError,
+          onRefresh: () async {
+            final userId = _connectedUserId;
+            if (userId != null) {
+              await _loadNotifications(userId);
+            }
+          },
+          onNotificationTap: _markNotificationRead,
+          onMarkAllRead: _markAllNotificationsRead,
+        );
+      default:
+        return const HomeContent();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -173,28 +312,215 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-      body: _pages[_selectedIndex],
+      body: _buildCurrentPage(),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         onTap: (index) {
           setState(() => _selectedIndex = index);
         },
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
             icon: Icon(Icons.home),
             label: 'Accueil',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.category),
             label: 'Categories',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.notifications),
+            icon: _NotificationNavIcon(count: _unreadNotifications),
             label: 'Notifications',
           ),
         ],
       ),
     );
+  }
+}
+
+class _NotificationNavIcon extends StatelessWidget {
+  final int count;
+
+  const _NotificationNavIcon({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    return Badge(
+      isLabelVisible: count > 0,
+      label: Text(count > 99 ? '99+' : '$count'),
+      child: const Icon(Icons.notifications),
+    );
+  }
+}
+
+class NotificationsPage extends StatelessWidget {
+  final List<Map<String, dynamic>> notifications;
+  final bool isLoading;
+  final String? error;
+  final Future<void> Function() onRefresh;
+  final ValueChanged<Map<String, dynamic>> onNotificationTap;
+  final Future<void> Function() onMarkAllRead;
+
+  const NotificationsPage({
+    super.key,
+    required this.notifications,
+    required this.isLoading,
+    required this.error,
+    required this.onRefresh,
+    required this.onNotificationTap,
+    required this.onMarkAllRead,
+  });
+
+  int get _unreadCount =>
+      notifications.where((item) => item['is_read'] != true).length;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading && notifications.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (error != null && notifications.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.notifications_off, size: 56),
+              const SizedBox(height: 16),
+              Text(
+                error!,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: onRefresh,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reessayer'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          Row(
+            children: [
+              Text(
+                'Notifications',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const Spacer(),
+              if (_unreadCount > 0)
+                TextButton.icon(
+                  onPressed: onMarkAllRead,
+                  icon: const Icon(Icons.done_all),
+                  label: const Text('Tout lire'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (notifications.isEmpty)
+            SizedBox(
+              height: MediaQuery.sizeOf(context).height * 0.55,
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.notifications_none, size: 64),
+                    SizedBox(height: 12),
+                    Text('Aucune notification'),
+                  ],
+                ),
+              ),
+            )
+          else
+            for (final notification in notifications)
+              _NotificationTile(
+                notification: notification,
+                onTap: () => onNotificationTap(notification),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NotificationTile extends StatelessWidget {
+  final Map<String, dynamic> notification;
+  final VoidCallback onTap;
+
+  const _NotificationTile({
+    required this.notification,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isRead = notification['is_read'] == true;
+    final createdAt = DateTime.tryParse(
+      notification['created_at']?.toString() ?? '',
+    );
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        onTap: onTap,
+        leading: CircleAvatar(
+          backgroundColor: _typeColor(colorScheme).withAlpha(32),
+          child: Icon(
+            _typeIcon(),
+            color: _typeColor(colorScheme),
+          ),
+        ),
+        title: Text(
+          notification['content']?.toString() ?? '',
+          style: TextStyle(
+            fontWeight: isRead ? FontWeight.normal : FontWeight.w700,
+          ),
+        ),
+        subtitle: createdAt == null ? null : Text(timeAgo(createdAt)),
+        trailing: isRead
+            ? null
+            : Icon(
+                Icons.circle,
+                size: 10,
+                color: colorScheme.primary,
+              ),
+      ),
+    );
+  }
+
+  IconData _typeIcon() {
+    switch (notification['type']) {
+      case 'reply':
+        return Icons.reply;
+      case 'like':
+        return Icons.favorite;
+      case 'category_topic':
+        return Icons.forum;
+      default:
+        return Icons.notifications;
+    }
+  }
+
+  Color _typeColor(ColorScheme colorScheme) {
+    switch (notification['type']) {
+      case 'reply':
+        return colorScheme.primary;
+      case 'like':
+        return Colors.red;
+      case 'category_topic':
+        return Colors.green;
+      default:
+        return colorScheme.secondary;
+    }
   }
 }
 
@@ -260,7 +586,8 @@ class _CategoriesPageState extends State<CategoriesPage> {
     });
 
     try {
-      final categories = await _apiService.getCategories();
+      final userId = context.read<AuthProvider>().user?.id;
+      final categories = await _apiService.getCategories(userId: userId);
       setState(() {
         _categories = categories;
         _isLoading = false;
@@ -270,6 +597,36 @@ class _CategoriesPageState extends State<CategoriesPage> {
         _error = e.toString();
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _toggleCategoryFollow(Map<String, dynamic> category) async {
+    final userId = context.read<AuthProvider>().user?.id;
+    final categoryId = category['id'] as int?;
+    if (userId == null || categoryId == null) return;
+
+    final previous = category['is_following'] == true;
+    setState(() {
+      category['is_following'] = !previous;
+    });
+
+    try {
+      final result = await _apiService.toggleCategoryFollow(
+        categoryId: categoryId,
+        userId: userId,
+      );
+      if (!mounted) return;
+      setState(() {
+        category['is_following'] = result['is_following'] == true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        category['is_following'] = previous;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString())),
+      );
     }
   }
 
@@ -398,8 +755,22 @@ class _CategoriesPageState extends State<CategoriesPage> {
         ),
         title: Text(category['name'] as String? ?? ''),
         subtitle: Text(category['description'] as String? ?? ''),
-        trailing: isAdmin
-            ? PopupMenuButton<String>(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: category['is_following'] == true
+                  ? 'Ne plus suivre'
+                  : 'Suivre',
+              icon: Icon(
+                category['is_following'] == true
+                    ? Icons.notifications_active
+                    : Icons.notifications_none,
+              ),
+              onPressed: () => _toggleCategoryFollow(category),
+            ),
+            if (isAdmin)
+              PopupMenuButton<String>(
                 onSelected: (value) {
                   if (value == 'edit') {
                     _openCategoryForm(category: category);
@@ -424,7 +795,10 @@ class _CategoriesPageState extends State<CategoriesPage> {
                   ),
                 ],
               )
-            : const Icon(Icons.chevron_right),
+            else
+              const Icon(Icons.chevron_right),
+          ],
+        ),
         onTap: () {
           Navigator.push(
             context,
