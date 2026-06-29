@@ -228,6 +228,42 @@ class ApiService {
     throw Exception('Erreur chargement sujets');
   }
 
+  Future<Map<String, dynamic>> search({
+    String query = '',
+    int? categoryId,
+    int? userId,
+    DateTime? dateFrom,
+    DateTime? dateTo,
+    String type = 'all',
+  }) async {
+    String dateOnly(DateTime value) {
+      final month = value.month.toString().padLeft(2, '0');
+      final day = value.day.toString().padLeft(2, '0');
+      return '${value.year}-$month-$day';
+    }
+
+    final uri = Uri.parse('$baseUrl/search').replace(
+      queryParameters: {
+        if (query.trim().isNotEmpty) 'q': query.trim(),
+        if (categoryId != null) 'category_id': '$categoryId',
+        if (userId != null) 'user_id': '$userId',
+        if (dateFrom != null) 'date_from': dateOnly(dateFrom),
+        if (dateTo != null) 'date_to': dateOnly(dateTo),
+        'type': type,
+      },
+    );
+
+    final response = await http.get(
+      uri,
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Erreur recherche'));
+  }
+
   Future<Map<String, dynamic>> createTopic({
     required String title,
     required String content,

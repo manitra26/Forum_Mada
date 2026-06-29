@@ -9,6 +9,7 @@ import '../utils/formatters.dart';
 import 'admin_dashboard_screen.dart';
 import 'admin_users_screen.dart';
 import 'profile_screen.dart';
+import 'search_screen.dart';
 import 'settings_screen.dart';
 import 'topics_screen.dart';
 
@@ -174,6 +175,16 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('ForumMada'),
         centerTitle: true,
         actions: [
+          IconButton(
+            tooltip: 'Recherche',
+            icon: const Icon(Icons.search),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SearchScreen()),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.person),
             onPressed: () {

@@ -71,6 +71,7 @@ Future<void> main(List<String> args) async {
     ..patch('/api/categories/<id>', _updateCategory)
     ..post('/api/categories/<id>/follow', _toggleCategoryFollow)
     ..delete('/api/categories/<id>', _deleteCategory)
+    ..get('/api/search', _search)
     ..get('/api/topics', _getTopics)
     ..post('/api/topics', _createTopic)
     ..get('/api/topics/<id>', _getTopicById)
@@ -856,6 +857,201 @@ Future<void> _notifyCategoryFollowers({
       userId: _toInt(row[0]),
       type: 'category_topic',
       content: '$actorUsername a cree un nouveau sujet: "$topicTitle"',
+    );
+  }
+}
+
+Future<Response> _search(Request request) async {
+  try {
+    final params = request.url.queryParameters;
+    final query = (params['q'] ?? '').trim();
+    final type = (params['type'] ?? 'all').trim();
+    final categoryId = int.tryParse(params['category_id'] ?? '');
+    final userId = int.tryParse(params['user_id'] ?? '');
+    final dateFrom = DateTime.tryParse(params['date_from'] ?? '');
+    final dateTo = DateTime.tryParse(params['date_to'] ?? '');
+
+    final shouldSearchTopics = type == 'all' || type == 'topics';
+    final shouldSearchPosts = type == 'all' || type == 'posts';
+    if (!shouldSearchTopics && !shouldSearchPosts) {
+      return Response(400,
+          body: jsonEncode({'error': 'Type de recherche invalide'}),
+          headers: _jsonHeaders);
+    }
+
+    final parameters = <String, dynamic>{
+      'query': '%${query.toLowerCase()}%',
+      if (categoryId != null) 'categoryId': categoryId,
+      if (userId != null) 'userId': userId,
+      if (dateFrom != null) 'dateFrom': dateFrom,
+      if (dateTo != null)
+        'dateTo': dateTo.add(const Duration(days: 1)),
+    };
+
+    final topicWhere = <String>[
+      if (query.isNotEmpty)
+        '''(
+          LOWER(t.title) LIKE @query OR
+          LOWER(COALESCE(t.content, '')) LIKE @query OR
+          LOWER(u.username) LIKE @query OR
+          LOWER(COALESCE(c.name, '')) LIKE @query
+        )''',
+      if (categoryId != null) 't.category_id = @categoryId',
+      if (userId != null) 't.user_id = @userId',
+      if (dateFrom != null) 't.created_at >= @dateFrom',
+      if (dateTo != null) 't.created_at < @dateTo',
+    ];
+    final topicWhereClause =
+        topicWhere.isEmpty ? '' : 'WHERE ${topicWhere.join(' AND ')}';
+
+    final postWhere = <String>[
+      if (query.isNotEmpty)
+        '''(
+          LOWER(p.content) LIKE @query OR
+          LOWER(t.title) LIKE @query OR
+          LOWER(COALESCE(t.content, '')) LIKE @query OR
+          LOWER(u.username) LIKE @query OR
+          LOWER(COALESCE(c.name, '')) LIKE @query
+        )''',
+      if (categoryId != null) 't.category_id = @categoryId',
+      if (userId != null) 'p.user_id = @userId',
+      if (dateFrom != null) 'p.created_at >= @dateFrom',
+      if (dateTo != null) 'p.created_at < @dateTo',
+    ];
+    final postWhereClause =
+        postWhere.isEmpty ? '' : 'WHERE ${postWhere.join(' AND ')}';
+
+    final topics = shouldSearchTopics
+        ? await connection.execute(
+            Sql.named('''
+              SELECT
+                t.id,
+                t.title,
+                t.content,
+                t.user_id,
+                t.category_id,
+                t.views,
+                t.is_pinned,
+                t.is_locked,
+                t.created_at,
+                t.updated_at,
+                u.username,
+                u.avatar_url,
+                COUNT(p.id) as posts_count,
+                COALESCE(c.name, 'Sans categorie') as category_name
+              FROM topics t
+              JOIN users u ON t.user_id = u.id
+              LEFT JOIN categories c ON t.category_id = c.id
+              LEFT JOIN posts p ON p.topic_id = t.id
+              $topicWhereClause
+              GROUP BY t.id, u.username, u.avatar_url, c.name
+              ORDER BY t.is_pinned DESC, t.created_at DESC
+              LIMIT 50
+            '''),
+            parameters: parameters,
+          )
+        : const [];
+
+    final posts = shouldSearchPosts
+        ? await connection.execute(
+            Sql.named('''
+              SELECT
+                p.id,
+                p.content,
+                p.user_id,
+                p.topic_id,
+                p.likes_count,
+                p.created_at,
+                p.updated_at,
+                u.username,
+                u.avatar_url,
+                t.id as topic_id,
+                t.title,
+                t.content as topic_content,
+                t.user_id as topic_user_id,
+                t.category_id,
+                t.views,
+                t.is_pinned,
+                t.is_locked,
+                t.created_at as topic_created_at,
+                t.updated_at as topic_updated_at,
+                tu.username as topic_username,
+                tu.avatar_url as topic_avatar_url,
+                COALESCE(c.name, 'Sans categorie') as category_name,
+                (
+                  SELECT COUNT(*)
+                  FROM posts pc
+                  WHERE pc.topic_id = t.id
+                ) as posts_count
+              FROM posts p
+              JOIN users u ON p.user_id = u.id
+              JOIN topics t ON p.topic_id = t.id
+              JOIN users tu ON t.user_id = tu.id
+              LEFT JOIN categories c ON t.category_id = c.id
+              $postWhereClause
+              ORDER BY p.created_at DESC
+              LIMIT 50
+            '''),
+            parameters: parameters,
+          )
+        : const [];
+
+    return Response.ok(
+      jsonEncode({
+        'topics': topics.map((row) {
+          return {
+            'id': row[0],
+            'title': row[1],
+            'content': row[2],
+            'user_id': row[3],
+            'category_id': row[4],
+            'views': row[5],
+            'is_pinned': row[6],
+            'is_locked': row[7],
+            'created_at': _dateToIso(row[8]),
+            'updated_at': _dateToIso(row[9]),
+            'username': row[10],
+            'avatar_url': row[11],
+            'posts_count': _toInt(row[12]),
+            'category_name': row[13],
+          };
+        }).toList(),
+        'posts': posts.map((row) {
+          return {
+            'id': row[0],
+            'content': row[1],
+            'user_id': row[2],
+            'topic_id': row[3],
+            'likes_count': row[4],
+            'created_at': _dateToIso(row[5]),
+            'updated_at': _dateToIso(row[6]),
+            'username': row[7],
+            'avatar_url': row[8],
+            'topic': {
+              'id': row[9],
+              'title': row[10],
+              'content': row[11],
+              'user_id': row[12],
+              'category_id': row[13],
+              'views': row[14],
+              'is_pinned': row[15],
+              'is_locked': row[16],
+              'created_at': _dateToIso(row[17]),
+              'updated_at': _dateToIso(row[18]),
+              'username': row[19],
+              'avatar_url': row[20],
+              'category_name': row[21],
+              'posts_count': _toInt(row[22]),
+            },
+          };
+        }).toList(),
+      }),
+      headers: _jsonHeaders,
+    );
+  } catch (e) {
+    return Response.internalServerError(
+      body: jsonEncode({'error': e.toString()}),
+      headers: _jsonHeaders,
     );
   }
 }
