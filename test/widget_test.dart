@@ -8,10 +8,11 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:forum_mada/main.dart';
+import 'package:forum_mada/providers/theme_provider.dart';
 
 void main() {
   testWidgets('App loads without crashing', (WidgetTester tester) async {
-    await tester.pumpWidget(const ForumMadaApp());
+    await tester.pumpWidget(ForumMadaApp(themeProvider: ThemeProvider()));
 
     expect(find.byType(ForumMadaApp), findsOneWidget);
   });
